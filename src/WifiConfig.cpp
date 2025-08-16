@@ -1,5 +1,6 @@
 #include "WiFiConfig.h"
-#include <ElegantOTA.h>  // v2 (zonder loop())
+#include <ElegantOTA.h>   // v2 (zonder loop())
+#include <ESPmDNS.h>
 
 // ---------- HTML UI voor captive portal (root) ----------
 static String makeRootHtml() {
@@ -48,7 +49,7 @@ static String makeRootHtml() {
   return html;
 }
 
-// ---------- Utils ----------
+// ---------- enc → tekst ----------
 static const char* encToText(
 #if defined(ESP_ARDUINO_VERSION_MAJOR) && ESP_ARDUINO_VERSION_MAJOR >= 3
   wifi_auth_mode_t enc
@@ -84,16 +85,11 @@ void WiFiConfig::begin() {
   loadCredentials();
 
   if (hasSavedCredentials()) {
-    // niet-blokkerend: start STA connect
     WiFi.mode(WIFI_STA);
     WiFi.begin(_ssidSaved.c_str(), _passSaved.c_str());
   } else {
-    // nog niets doen; main kan startAP() oproepen wanneer gewenst
     WiFi.mode(WIFI_MODE_NULL);
   }
-
-  // ElegantOTA hangt aan onze WebServer zodra we AP starten
-  // (ElegantOTA.begin(&server)) staat in startAP()
 }
 
 void WiFiConfig::loop() {
@@ -107,25 +103,26 @@ void WiFiConfig::startAP(const String& prefix, const String& ap_pass) {
   _apPASS = ap_pass;
   buildApSsid();
   if (prefix.length()) {
-    // vervang prefix, suffix blijft behouden
-    // _apSSID eindigt op -XX:YY (5 tekens), dus vervangen we alles ervoor:
     _apSSID = prefix + _apSSID.substring(_apSSID.length() - 5);
   }
 
   WiFi.disconnect(true, true);
   delay(50);
-  WiFi.mode(WIFI_AP_STA);                       // STA nodig om te scannen
+  WiFi.mode(WIFI_AP_STA);
   WiFi.softAP(_apSSID.c_str(), _apPASS.c_str());
 
-  // DNS captive
   _dns.start(53, "*", WiFi.softAPIP());
 
-  // Routes
   setupRoutes();
 
-  ElegantOTA.begin(&_server);                   // v2, geen loop()
+  // OTA met simpele auth (pas aan!):
+  ElegantOTA.begin(&_server, "admin", "changeme");
   _server.begin();
   _apActive = true;
+
+  // mDNS (handig tijdens setup)
+  MDNS.begin("gridconnect");
+  MDNS.addService("http", "tcp", 80);
 }
 
 bool WiFiConfig::hasSavedCredentials() const {
@@ -148,7 +145,6 @@ void WiFiConfig::clearCredentials() {
 }
 
 void WiFiConfig::factoryReset() {
-  // Alleen onze namespace wissen
   _prefs.clear();
   _ssidSaved = "";
   _passSaved = "";
@@ -157,9 +153,8 @@ void WiFiConfig::factoryReset() {
   ESP.restart();
 }
 
-// ---------- intern ----------
 void WiFiConfig::buildApSsid() {
-  String mac = WiFi.macAddress();               // "AA:BB:CC:DD:EE:FF"
+  String mac = WiFi.macAddress();                 // "AA:BB:CC:DD:EE:FF"
   String last5 = mac.substring(mac.length() - 5); // "EE:FF"
   _apSSID = "Gridconnect-" + last5;
 }
@@ -177,8 +172,8 @@ void WiFiConfig::saveCredentials(const String& ssid, const String& pass) {
 }
 
 void WiFiConfig::setupRoutes() {
-  _server.on("/", HTTP_GET, std::bind(&WiFiConfig::handleRoot, this));
-  _server.on("/scan", HTTP_GET, std::bind(&WiFiConfig::handleScan, this));
+  _server.on("/",      HTTP_GET, std::bind(&WiFiConfig::handleRoot,    this));
+  _server.on("/scan",  HTTP_GET, std::bind(&WiFiConfig::handleScan,    this));
   _server.on("/setwifi", HTTP_GET, std::bind(&WiFiConfig::handleSetWiFi, this));
   _server.onNotFound(std::bind(&WiFiConfig::handleNotFound, this));
 }
@@ -217,7 +212,6 @@ void WiFiConfig::handleSetWiFi() {
   const String ssid = _server.arg("ssid");
   const String pass = _server.hasArg("pass") ? _server.arg("pass") : "";
 
-  // Sla op en verbind
   saveCredentials(ssid, pass);
 
   WiFi.mode(WIFI_STA);
@@ -227,8 +221,6 @@ void WiFiConfig::handleSetWiFi() {
     "<div style='text-align:center;padding:50px;font-family:Arial'>"
     "<h1>🔄 Connecting...</h1><p>Attempting to connect to <b>" + ssid + "</b></p>"
     "<p>Check the device screen for connection status.</p></div>");
-
-  // AP kan aanblijven totdat main detecteert dat we connected zijn en van state wisselt.
 }
 
 void WiFiConfig::handleNotFound() {

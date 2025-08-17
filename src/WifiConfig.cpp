@@ -1,8 +1,8 @@
 #include "WiFiConfig.h"
-#include <ElegantOTA.h>   // v2 (zonder loop())
+#include <ElegantOTA.h>   // v2
 #include <ESPmDNS.h>
 
-// ---------- HTML UI voor captive portal (root) ----------
+// ---------- HTML UI ----------
 static String makeRootHtml() {
   String html =
     "<!doctype html><html><head><meta name='viewport' content='width=device-width,initial-scale=1'/>"
@@ -13,6 +13,7 @@ static String makeRootHtml() {
     ".btn{background:#3498db;color:white;border:none;cursor:pointer} .btn:hover{background:#2980b9}"
     ".row{display:flex;gap:10px} .row>*{flex:1}"
     ".muted{color:#888;font-size:12px;text-align:center;margin-top:6px}"
+    "a{color:#3498db;text-decoration:none}"
     "</style></head><body>"
     "<div class='container'>"
     "<h1>🔌 GridConnect</h1><h2>WiFi Configuration</h2>"
@@ -25,8 +26,8 @@ static String makeRootHtml() {
     "Password:<br><input id='pass' name='pass' type='password' placeholder='Leave empty for open networks'><br>"
     "<input type='submit' value='Connect to Network' class='btn'>"
     "</form>"
-    "<p class='muted'>Tip: kies een netwerk via de dropdown, het SSID veld wordt automatisch ingevuld.</p>"
-    "<p style='text-align:center;margin-top:20px'><a href='/update'>⚙️ Firmware Update</a></p>"
+    "<p class='muted'>Tip: kies via de dropdown; SSID wordt automatisch ingevuld.</p>"
+    "<p class='muted'><a href='/setup'>🏠 Woning setup</a> • <a href='/update'>⚙️ Firmware Update</a></p>"
     "</div>"
     "<script>"
     "const netsEl=document.getElementById('nets');"
@@ -49,7 +50,6 @@ static String makeRootHtml() {
   return html;
 }
 
-// ---------- enc → tekst ----------
 static const char* encToText(
 #if defined(ESP_ARDUINO_VERSION_MAJOR) && ESP_ARDUINO_VERSION_MAJOR >= 3
   wifi_auth_mode_t enc
@@ -81,7 +81,7 @@ static const char* encToText(
 WiFiConfig WiFiCfg;
 
 void WiFiConfig::begin() {
-  _prefs.begin("net", false);    // RW namespace "net"
+  _prefs.begin("net", false);
   loadCredentials();
 
   if (hasSavedCredentials()) {
@@ -93,9 +93,21 @@ void WiFiConfig::begin() {
 }
 
 void WiFiConfig::loop() {
+  static unsigned long lastServerDebug = 0;
+  
   if (_apActive) {
     _dns.processNextRequest();
-    _server.handleClient();
+  }
+  
+  // Server requests afhandelen - DIT IS CRUCIAAL
+  _server.handleClient();
+  
+  // Debug elke 15 seconden
+  if (millis() - lastServerDebug > 15000) {
+    Serial.println("WiFiConfig::loop() - Server handling clients");
+    Serial.print("Server active on port 80, AP active: ");
+    Serial.println(_apActive);
+    lastServerDebug = millis();
   }
 }
 
@@ -112,17 +124,10 @@ void WiFiConfig::startAP(const String& prefix, const String& ap_pass) {
   WiFi.softAP(_apSSID.c_str(), _apPASS.c_str());
 
   _dns.start(53, "*", WiFi.softAPIP());
-
-  setupRoutes();
-
-  // OTA met simpele auth (pas aan!):
-  ElegantOTA.begin(&_server, "admin", "changeme");
-  _server.begin();
   _apActive = true;
-
-  // mDNS (handig tijdens setup)
-  MDNS.begin("gridconnect");
-  MDNS.addService("http", "tcp", 80);
+  
+  Serial.println("AP started: " + _apSSID);
+  Serial.println("AP IP: " + WiFi.softAPIP().toString());
 }
 
 bool WiFiConfig::hasSavedCredentials() const {
@@ -154,8 +159,8 @@ void WiFiConfig::factoryReset() {
 }
 
 void WiFiConfig::buildApSsid() {
-  String mac = WiFi.macAddress();                 // "AA:BB:CC:DD:EE:FF"
-  String last5 = mac.substring(mac.length() - 5); // "EE:FF"
+  String mac = WiFi.macAddress();
+  String last5 = mac.substring(mac.length() - 5);
   _apSSID = "Gridconnect-" + last5;
 }
 
@@ -172,17 +177,20 @@ void WiFiConfig::saveCredentials(const String& ssid, const String& pass) {
 }
 
 void WiFiConfig::setupRoutes() {
-  _server.on("/",      HTTP_GET, std::bind(&WiFiConfig::handleRoot,    this));
-  _server.on("/scan",  HTTP_GET, std::bind(&WiFiConfig::handleScan,    this));
+  _server.on("/",        HTTP_GET, std::bind(&WiFiConfig::handleRoot,    this));
+  _server.on("/scan",    HTTP_GET, std::bind(&WiFiConfig::handleScan,    this));
   _server.on("/setwifi", HTTP_GET, std::bind(&WiFiConfig::handleSetWiFi, this));
   _server.onNotFound(std::bind(&WiFiConfig::handleNotFound, this));
 }
 
 void WiFiConfig::handleRoot() {
+  Serial.println("HTTP Request received: /");
   _server.send(200, "text/html", makeRootHtml());
+  Serial.println("HTTP Response sent for /");
 }
 
 void WiFiConfig::handleScan() {
+  Serial.println("HTTP Request received: /scan");
   int n = WiFi.scanNetworks(false, true);
   String json = "[";
   for (int i = 0; i < n; i++) {
@@ -202,9 +210,11 @@ void WiFiConfig::handleScan() {
   json += "]";
   _server.send(200, "application/json", json);
   WiFi.scanDelete();
+  Serial.println("HTTP Response sent for /scan");
 }
 
 void WiFiConfig::handleSetWiFi() {
+  Serial.println("HTTP Request received: /setwifi");
   if (!_server.hasArg("ssid")) {
     _server.send(400, "text/plain", "Missing SSID");
     return;
@@ -220,10 +230,14 @@ void WiFiConfig::handleSetWiFi() {
   _server.send(200, "text/html",
     "<div style='text-align:center;padding:50px;font-family:Arial'>"
     "<h1>🔄 Connecting...</h1><p>Attempting to connect to <b>" + ssid + "</b></p>"
-    "<p>Check the device screen for connection status.</p></div>");
+    "<p>Check the device screen for connection status.</p>"
+    "<p><a href='/setup'>Ga naar woning setup</a></p>"
+    "</div>");
+  Serial.println("HTTP Response sent for /setwifi");
 }
 
 void WiFiConfig::handleNotFound() {
+  Serial.println("HTTP 404 - redirecting to /");
   _server.sendHeader("Location", "/");
   _server.send(302, "text/plain", "");
 }

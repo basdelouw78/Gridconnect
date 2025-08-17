@@ -5,34 +5,26 @@
 #include <WebServer.h>
 #include <Preferences.h>
 
-// Eenvoudige WiFi-config module met:
-// - AP+Captive portal ("/" + "/scan" + "/setwifi")
-// - Opslaan/lees van SSID/Pass in NVS (Preferences)
-// - Helpers voor reset en factory reset
-// - ElegantOTA init (v2) in begin()
-
 class WiFiConfig {
 public:
-  void begin();                   // init prefs + evt STA connect
-  void loop();                    // afhandelen DNS/Web indien AP actief
+  void begin();
+  void loop();
   void startAP(const String& ssid_prefix = "Gridconnect-",
                const String& ap_pass = "12345678");
 
   bool hasSavedCredentials() const;
   void tryConnectSaved();
 
-  // Credentials / reset
   void clearCredentials();
   void factoryReset();
 
-  // Info voor UI
   String getApSsid() const { return _apSSID; }
   String getApPass() const { return _apPASS; }
   IPAddress apIP() const { return WiFi.softAPIP(); }
   WebServer& server() { return _server; }
+  void setupRoutes(); // MAAK PUBLIC VOOR GEBRUIK IN MAIN.CPP
 
 private:
-  void setupRoutes();
   void buildApSsid();
   void loadCredentials();
   void saveCredentials(const String& ssid, const String& pass);
